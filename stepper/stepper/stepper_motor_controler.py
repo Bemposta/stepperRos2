@@ -2,10 +2,14 @@ import serial
 import threading
 import time
 import re
-  
-# ---------------------------------------------------
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from std_msgs.msg import String
+from rclpy.time import Time as RclpyTime
+
+#============================================================================================================
 # SerialReader con hilo dedicado
-# ---------------------------------------------------
 class SerialReader(threading.Thread):
     def __init__(self, port="/dev/ttyACM0", baudrate=115200, reattempt_delay=2, callback=None):
         super().__init__(daemon=True)
@@ -86,28 +90,60 @@ class SerialReader(threading.Thread):
             vel_R = int(match.group(7))
             return millis, flag_L, pulsos_L, vel_L, flag_R, pulsos_R, vel_R
         else:
-            print(f"[Warning] Paquete corrupto: '{line}'")
-            return None
+            return line
+            
+    def sendMOV(self, numV: float, numW: float):
+        if self.ser is None:
+            raise RuntimeError("Serial no inicializado")
+        comando = f"MOV V {numV} W {numW}\n"
+        self.ser.write(comando.encode('utf-8'))
+        
 
+#============================================================================================================
+class StepperMotorControl(Node):
+    def __init__(self):
+        super().__init__('stepper_motor_control')
+        self.subscription_cmd_vel = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 1)
+        self.publisher_arduino = self.create_publisher(String, '/arduino', 1)
+        self.subscription_cmd_vel   # evitar advertencia de variable no usada
+        self.publisher_arduino      # evitar advertencia de variable no usada 
+        self.reader = SerialReader(port="/dev/ttyACM0", baudrate=115200, callback=self.serial_reciver_callback)
+        self.reader.start()
+        self.get_logger().info('StepperMotorControl iniciakizado')
 
-# ---------------------------------------------------
-# Callback para procesar líneas recibidas
-# ---------------------------------------------------
-def on_line_received(result):
-    if result:
+    def cmd_vel_callback(self, msg: Twist):
+        #self.get_logger().info(f"msg={msg}")
+        v = msg.linear.x     # Velocidad lineal en eje X
+        w = msg.angular.z    # Velocidad angular en eje Z
+        self.reader.sendMOV(v, w)
+        
+    # Callback para procesar líneas recibidas
+    def serial_reciver_callback(self, result):
+        if not isinstance(result, tuple):
+            self.get_logger().info(f'[Warning] Paquete corrupto en SerialPort leido: {result}.')
+            return
         millis, flag_L, pulsos_L, vel_L, flag_R, pulsos_R, vel_R = result
-        print(f"millis={millis}, L={flag_L},{pulsos_L},{vel_L}, R={flag_R},{pulsos_R},{vel_R}")
+        msg = String()
+        msg.data = f"millis={millis}, L={flag_L},{pulsos_L},{vel_L}, R={flag_R},{pulsos_R},{vel_R}"
+        self.publisher_arduino.publish(msg)
+            
+    def closeSerial(self):
+        self.reader.stop()
 
-# ---------------------------------------------------
-# Ejemplo de uso
-# ---------------------------------------------------
-if __name__ == "__main__":
-    reader = SerialReader(port="/dev/ttyACM0", baudrate=115200, callback=on_line_received)
-    reader.start()
-
+#============================================================================================================
+def main(args=None):
+    rclpy.init(args=args)
+    node = StepperMotorControl()
     try:
-        while True:
-            # Aquí podrías poner el control de tu robot
-            time.sleep(0.01)
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        reader.stop()
+        print("¡¡ KeyboardInterrupt !!")
+        pass
+    node.closeSerial()
+    node.destroy_node()
+    rclpy.shutdown()
+
+#============================================================================================================
+if __name__ == '__main__':
+    main()
+
