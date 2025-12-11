@@ -16,36 +16,39 @@
     W = velocidad angular (entre 0.0 y 1.0)
     velLeft / velRight = velocidad de ruedas (pasos/seg)
 */
-// Arquitectura del Robot
-const float SEPARACION = 0.15;  // en metros
-const float RADIO = 0.04;       // en metros
-const float PPR = 1500.0;       // Pulsos por vuelta
 
 // Pines del motor izquierdo
-const byte L_IN1 = 2;
-const byte L_IN2 = 3;
-const byte L_IN3 = 4;
-const byte L_IN4 = 5;
+#define L_IN1 2
+#define L_IN2 3
+#define L_IN3 4
+#define L_IN4 5
 
 // Pines del motor derecho
-const byte R_IN1 = 11;
-const byte R_IN2 = 10;
-const byte R_IN3 = 9;
-const byte R_IN4 = 8;
+#define R_IN1 11
+#define R_IN2 10
+#define R_IN3 9
+#define R_IN4 8
 
-const float MAX_SPEED = 800.0;
-const float MAX_ACCEL = 1000.0;
-const float MIN_SPEED = 10.0;
+#define MAX_SPEED 600.0
+#define MAX_ACCEL 1000.0
+#define MIN_SPEED 10.0
 
-const int INTERVALO_PUBLISH = 50;  //en milisegundos.
+#define INTERVALO_POS_MS 500
 
 // Motores en modo FULL4WIRE
-const byte L = 0;  //Left
-const byte R = 1;  //Rigth
+#define L 0  //Left
+#define R 1  //Rigth
 AccelStepper motores[] = {
   AccelStepper(AccelStepper::FULL4WIRE, L_IN1, L_IN3, L_IN2, L_IN4, false),
   AccelStepper(AccelStepper::FULL4WIRE, R_IN1, R_IN3, R_IN2, R_IN4, false)
 };
+
+const float k_linear = MAX_SPEED;   // pasos/segundo por unidad de velocidad lineal
+const float k_angular = MAX_SPEED;  // pasos/segundo por unidad de velocidad angular
+
+// Velocidades actuales de cada rueda (pasos/s)
+float vL = 0;
+float vR = 0;
 
 String buffer = "";
 
@@ -82,7 +85,7 @@ void loop() {
   }
 
   now = millis();
-  if (now - lastTime >= INTERVALO_PUBLISH) {
+  if (now - lastTime >= INTERVALO_POS_MS) {  // han pasado 200 ms
     lastTime = now;
     Serial.print(now);
     Serial.print(",");
@@ -90,13 +93,9 @@ void loop() {
     Serial.print(",");
     Serial.print(motores[L].currentPosition());
     Serial.print(",");
-    Serial.print((int)motores[L].speed());
-    Serial.print(",");
     Serial.print(motores[R].isRunning());
     Serial.print(",");
-    Serial.print(motores[R].currentPosition());
-    Serial.print(",");
-    Serial.println((int)motores[R].speed());
+    Serial.println(motores[R].currentPosition());        
   }
 }
 
@@ -108,19 +107,11 @@ void setWheelSpeeds(float V, float W) {
     V = V / (VW);
     W = W / (VW);
   }
-  // Conversión de /cmd_vel a giros de rueda:
-  float VLang = (V - (W * SEPARACION / 2)) / RADIO;  // rad/s
-  float VRang = (V + (W * SEPARACION / 2)) / RADIO;  // rad/s
-  float PPRL = VLang * (PPR / 6.28318530718);        // pulsos/s
-  float PPRR = VRang * (PPR / 6.28318530718);        // pulsos/s
-  // Correcion a tope de velocidad indicada.
+  // Conversión a velocidades de rueda:
   float vLR[2];  //velocidad Left & Right
-  float max = (PPRL > PPRR) ? PPRL : PPRR;
-  float escala = 1.0;
-  if(max > MAX_SPEED) escala = MAX_SPEED / max;
-  vLR[0] = (PPRL * escala);
-  vLR[1] = (PPRR * escala);
-  // Establecer velocidades y finales de carrera a los motores.
+  vLR[0] = (V * k_linear) - (W * k_angular);
+  vLR[1] = (V * k_linear) + (W * k_angular);
+
   for (int lr = 0; lr < 2; lr++) {
     if (!motores[lr].isRunning())
       motores[lr].enableOutputs();
@@ -145,7 +136,7 @@ void setWheelTo(char m, float v, int p) {
     motor = &motores[R];
 
   // Conversión a velocidades de rueda:
-  v = (v * MAX_SPEED);
+  v = (v * k_linear);
   if (v < 0) p = -p;
 
   if (motor->isRunning()) {
