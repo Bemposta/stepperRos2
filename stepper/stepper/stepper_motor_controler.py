@@ -59,7 +59,6 @@ class SerialReader(threading.Thread):
                 if self.ser.in_waiting > 0:
                     chunk = self.ser.read(self.ser.in_waiting).decode(errors="ignore")
                     self.buffer += chunk
-
                     # Procesar líneas completas
                     while "\n" in self.buffer:
                         line, self.buffer = self.buffer.split("\n", 1)
@@ -75,6 +74,16 @@ class SerialReader(threading.Thread):
             except (serial.SerialException, OSError):
                 print("[SerialReader] Desconectado. Reconectando...")
                 self.connect()
+                
+    def parse_packet(self, line):
+        match = self.packet_regex.match(line)
+        if match:
+            millis = int(match.group(1))
+            pulsos_L = int(match.group(2))
+            pulsos_R = int(match.group(3))
+            return millis, pulsos_L, pulsos_R
+        else:
+            return line
 
     # Parada limpia
     def stop(self):
@@ -82,8 +91,6 @@ class SerialReader(threading.Thread):
         if self.ser:
             self.ser.close()
         print("[SerialReader] Detenido.")
-
-
             
     def sendMOV(self, numV: float, numW: float):
         if self.ser is None:
@@ -91,7 +98,6 @@ class SerialReader(threading.Thread):
         comando = f"MOV V {numV} W {numW}\n"
         self.ser.write(comando.encode('utf-8'))
         
-
 #============================================================================================================
 class StepperMotorControl(Node):
     def __init__(self):
@@ -167,7 +173,6 @@ class StepperMotorControl(Node):
         odom.twist.twist.angular.x = 0.0
         odom.twist.twist.angular.y = 0.0
         odom.twist.twist.angular.z = w
-
         return odom
 
     def closeSerial(self):

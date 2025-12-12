@@ -23,7 +23,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'stepper = stepper.stepper_motor_controler:main'
+            'stepper = stepper.stepper_motor_controler:main',
+            'show = stepper.show_odom:main'
         ],
     },
 )
