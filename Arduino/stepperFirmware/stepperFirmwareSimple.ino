@@ -1,0 +1,187 @@
+#include <AccelStepper.h>
+
+/*
+  Robot diferencial con dos motores 28BYJ-48 + ULN2003
+  Control por velocidad continua (sin destino)
+  Modo no bloqueante: setSpeed() + runSpeed()
+
+  Comandos por Serial desde Raspberry Pi:
+    MOV V <lineal> W <angular>
+    STOP
+    GET
+    GOL <vel> <pos> -> Go Left <velocidad> <pasos>. Donde velocidad entre 0.0 y 1.0
+    GOR <vel> <pos> -> Go Rigth <velocidad> <pasos>. Donde velocidad entre 0.0 y 1.0
+  Donde:
+    V = velocidad lineal (entre 0.0 y 1.0)
+    W = velocidad angular (entre 0.0 y 1.0)
+    velLeft / velRight = velocidad de ruedas (pasos/seg)
+*/
+// Arquitectura del Robot
+const float SEPARACION = 0.15;  // en metros
+const float RADIO = 0.04;       // en metros
+const float PPR = 1500.0;       // Pulsos por vuelta
+
+// Pines del motor izquierdo
+const byte L_IN1 = 2;
+const byte L_IN2 = 3;
+const byte L_IN3 = 4;
+const byte L_IN4 = 5;
+
+// Pines del motor derecho
+const byte R_IN1 = 11;
+const byte R_IN2 = 10;
+const byte R_IN3 = 9;
+const byte R_IN4 = 8;
+
+const float MAX_SPEED = 800.0;
+const float MAX_ACCEL = 1000.0;
+const float MIN_SPEED = 10.0;
+
+const int INTERVALO_PUBLISH = 25;  //en milisegundos.
+
+// Motores en modo FULL4WIRE
+const byte L = 0;  //Left
+const byte R = 1;  //Rigth
+AccelStepper motores[] = {
+  AccelStepper(AccelStepper::FULL4WIRE, L_IN1, L_IN3, L_IN2, L_IN4, false),
+  AccelStepper(AccelStepper::FULL4WIRE, R_IN1, R_IN3, R_IN2, R_IN4, false)
+};
+
+String buffer = "";
+
+void setup() {
+  Serial.begin(115200);
+
+  motores[L].setMaxSpeed(MAX_SPEED);
+  motores[R].setMaxSpeed(MAX_SPEED);
+  motores[L].setAcceleration(MAX_ACCEL);
+  motores[R].setAcceleration(MAX_ACCEL);
+
+  Serial.println("ARDUINO READY");
+}
+
+void loop() {
+  static unsigned long lastTime = millis();
+  static unsigned long now = 0;
+
+  // Ejecuta movimiento continuo (NO BLOQUEANTE)
+  motores[L].run();
+  motores[R].run();
+
+  // Procesar comandos entrantes
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (buffer.length() > 0) {
+        handleCommand(buffer);
+        buffer = "";
+      }
+    } else {
+      buffer += c;
+    }
+  }
+
+  now = millis();
+  if (now - lastTime >= INTERVALO_PUBLISH) {
+    ;
+    Serial.print(now - lastTime);
+    Serial.print(",");
+    //Serial.print(motores[L].isRunning());
+    //Serial.print(",");
+    Serial.print(motores[L].currentPosition());
+    Serial.print(",");
+    //Serial.print((int)motores[L].speed());
+    //Serial.print(",");
+    //Serial.print(motores[R].isRunning());
+    //Serial.print(",");
+    Serial.println(motores[R].currentPosition());
+    //Serial.print(",");
+    //Serial.println((int)motores[R].speed());
+    lastTime = now;
+  }
+}
+
+//Establece velocidades: V=Velocidad W=Giro
+void setWheelSpeeds(float V, float W) {
+  //Correcion en modulo. para que la velocidad no se haga mayor que max_velicidad.
+  float VW = abs(V) + abs(W);
+  if (VW > 1) {
+    V = V / (VW);
+    W = W / (VW);
+  }
+  // Conversión de /cmd_vel a giros de rueda:
+  float VLang = (V - (W * SEPARACION / 2)) / RADIO;  // rad/s
+  float VRang = (V + (W * SEPARACION / 2)) / RADIO;  // rad/s
+  float PPRL = VLang * (PPR / 6.28318530718);        // pulsos/s
+  float PPRR = VRang * (PPR / 6.28318530718);        // pulsos/s
+  // Correcion a tope de velocidad indicada.
+  float vLR[2];  //velocidad Left & Right
+  float max = (PPRL > PPRR) ? PPRL : PPRR;
+  float escala = 1.0;
+  if(max > MAX_SPEED) escala = MAX_SPEED / max;
+  vLR[0] = (PPRL * escala);
+  vLR[1] = (PPRR * escala);
+  // Establecer velocidades y finales de carrera a los motores.
+  for (int lr = 0; lr < 2; lr++) {
+    if (!motores[lr].isRunning())
+      motores[lr].enableOutputs();
+    motores[lr].setMaxSpeed(abs(vLR[lr]));
+    if (vLR[lr] >= MIN_SPEED)
+      motores[lr].moveTo(0x3FFFFFFF);  // 0x3FFFFFFF = MaxInt32 / 2
+    else if ((vLR[lr] <= -MIN_SPEED))
+      motores[lr].moveTo(0xBFFFFFFF);  // 0xBFFFFFFF = -MaxInt32 / 2
+    else {
+      motores[lr].stop();
+      motores[lr].disableOutputs();
+      vLR[lr] = 0.0;
+    }
+  }
+}
+
+void handleCommand(String cmd) {
+  cmd.trim();
+
+  // Separar tokens
+  char buf[cmd.length() + 1];
+  cmd.toCharArray(buf, sizeof(buf));
+  char* t = strtok(buf, " ");
+
+  if (!t) return;
+
+  String s = String(t);
+
+  // ---------------------------
+  // SET velocidades diferenciales
+  // Formato: MOV V <lineal> W <angular>
+  // ---------------------------
+  if (s == "MOV") {
+    float V = 0;
+    float W = 0;
+
+    char* p = strtok(NULL, " ");
+    while (p) {
+      String key = String(p);
+      char* val = strtok(NULL, " ");
+      if (!val) break;
+
+      if (key == "V") V = atof(val);
+      if (key == "W") W = atof(val);
+
+      p = strtok(NULL, " ");
+    }
+
+    setWheelSpeeds(V, W);
+    return;
+  }
+
+  // STOP
+  if (s == "STOP") {
+    motores[L].stop();
+    motores[R].stop();
+    motores[L].disableOutputs();
+    motores[R].disableOutputs();
+    //motores[L].setCurrentPosition(0);
+    //motores[R].setCurrentPosition(0);
+    return;
+  }
+}
